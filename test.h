@@ -25,14 +25,17 @@ INIT(int nthreads, int quantum_us)
 static inline void
 CHECKPOINT(int n)
 {
+
 	pthread_mutex_lock(&_test_lock);
 	int nope = _test_counter++ != n;
 	pthread_mutex_unlock(&_test_lock);
+
 	if (nope) {
 		_test_nope++;
 		DPRINTF("nope: ");
 	}
 	DPRINTF("checkpoint %d\n", n);
+
 }
 
 static inline void

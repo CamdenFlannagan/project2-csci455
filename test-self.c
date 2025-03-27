@@ -15,6 +15,8 @@ subthread_main(void *arg)
 	st_self = kfc_self();
 	// nobody here but us chickens
 	CHECKPOINT(3);
+	DPRINTF("hi checkpoint 3!\n");
+
 	return NULL;
 }
 
@@ -29,13 +31,20 @@ thread_main(void *arg)
 	CHECKPOINT(1);
 
 	tid_t stid = THREAD(subthread_main);
+
+	DPRINTF("hi!\n");
+
+
 	if (parent_first)
 		kfc_yield();
 
+
+	
 	ASSERT(kfc_self() == t_self, "self() changed for thread\n");
 	ASSERT(stid == st_self, "subthread ID from create() != ID from self()");
 	ASSERT(st_self != t_self, "subthread assigned same ID as thread");
 	ASSERT(st_self != m_self, "subthread assigned same ID as main");
+
 
 	CHECKPOINT(4);
 	return NULL;

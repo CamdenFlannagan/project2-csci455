@@ -1,9 +1,21 @@
 #include <assert.h>
+#include <stdio.h>
 #include <sys/types.h>
+#include <ucontext.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "kfc.h"
+#include "valgrind.h"
+
+#include "queue.h"
 
 static int inited = 0;
+
+int id = 0;
+
+queue_t queue;
 
 /**
  * Initializes the kfc library.  Programs are required to call this function
@@ -20,6 +32,8 @@ kfc_init(int kthreads, int quantum_us)
 {
 	assert(!inited);
 
+	queue_init(&queue);
+
 	inited = 1;
 	return 0;
 }
@@ -35,10 +49,13 @@ kfc_init(int kthreads, int quantum_us)
  * convenience to you if you are using Valgrind to check your code, which I
  * always encourage.
  */
-void
-kfc_teardown(void)
+
+
+void kfc_teardown(void)
 {
 	assert(inited);
+
+	queue_destroy(&queue);
 
 	inited = 0;
 }
@@ -51,7 +68,7 @@ kfc_teardown(void)
  * @param ptid[out]   Pointer to a tid_t variable in which to store the new
  *                    thread's ID
  * @param start_func  Thread main function
- * @param arg         Argument to be passed to the thread main function
+ * @param tid_t		  Argument to be passed to the thread main function
  * @param stack_base  Location of the thread's stack if already allocated, or
  *                    NULL if requesting that the library allocate it
  *                    dynamically
@@ -66,7 +83,34 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 {
 	assert(inited);
 
-	return 0;
+	if (stack_base == NULL) {
+		if (stack_size == 0)
+			stack_size = KFC_DEF_STACK_SIZE;
+		stack_base = malloc(stack_size);
+		VALGRIND_STACK_REGISTER(stack_base, stack_base + stack_size);
+	}
+
+	ucontext_t next_ctx;
+	getcontext(&next_ctx);
+	next_ctx.uc_stack.ss_sp = stack_base;
+	next_ctx.uc_stack.ss_size = stack_size;
+	next_ctx.uc_stack.ss_flags = 0;
+	
+	ucontext_t curr_ctx;
+	next_ctx.uc_link = &curr_ctx;
+
+	makecontext(&next_ctx, (void (*)(void)) start_func, 1, arg);
+
+	*ptid = id++;
+	DPRINTF("this thread's id: %d\n", *ptid);
+
+	if (swapcontext(&curr_ctx, &next_ctx) == -1){
+		perror("swapcontext error :");
+	}
+	id = *ptid;
+	DPRINTF("just exited previous thread: *ptid = %d, id = %d\n", *ptid, id);
+
+	return *ptid;
 }
 
 /**
@@ -112,7 +156,7 @@ kfc_self(void)
 {
 	assert(inited);
 
-	return 0;
+	return id;
 }
 
 /**

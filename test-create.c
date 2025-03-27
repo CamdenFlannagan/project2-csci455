@@ -28,10 +28,12 @@ subthread_main(void *arg)
 static void *
 thread_main(void *arg)
 {
+
 	if (parent_first < 0)
 		parent_first = 0;
 
 	long x = (long) arg;
+
 	CHECKPOINT(1);
 
 	ASSERT(x == 42, "argument 42 was not passed");
