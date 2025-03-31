@@ -57,11 +57,15 @@ main(void)
 
 	CHECKPOINT(0);
 
+	DPRINTF("'sup. You're entering from the right place.\n");
+
 	THREAD_ARG(thread_main, (void *) 42);
 	if (parent_first < 0) {
 		parent_first = 1;
 		kfc_yield();
 	}
+
+	DPRINTF("'sup. You've come to the right place.\n");
 
 	// Preserve correct behavior once thread switching is implemented
 	kfc_yield();

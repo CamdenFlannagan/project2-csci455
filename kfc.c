@@ -13,6 +13,7 @@
 
 static int inited = 0;
 
+int ids_so_far = 0;
 int id = 0;
 
 queue_t queue;
@@ -87,6 +88,10 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		if (stack_size == 0)
 			stack_size = KFC_DEF_STACK_SIZE;
 		stack_base = malloc(stack_size);
+		if (stack_base == NULL) {
+			perror("kfc_create stack_base malloc error: ");
+			return -1;
+		}
 		VALGRIND_STACK_REGISTER(stack_base, stack_base + stack_size);
 	}
 
@@ -101,16 +106,18 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 
 	makecontext(&next_ctx, (void (*)(void)) start_func, 1, arg);
 
-	*ptid = id++;
-	DPRINTF("this thread's id: %d\n", *ptid);
+	int current_id = id;
+	*ptid = id = ++ids_so_far;
 
+	//DPRINTF("id before swapcontext: %d\n", id);
 	if (swapcontext(&curr_ctx, &next_ctx) == -1){
-		perror("swapcontext error :");
+		perror("swapcontext error: ");
 	}
-	id = *ptid;
-	DPRINTF("just exited previous thread: *ptid = %d, id = %d\n", *ptid, id);
+	//DPRINTF("id after  swapcontext: %d\n", id);
 
-	return *ptid;
+	id = current_id;
+
+	return 0;
 }
 
 /**
