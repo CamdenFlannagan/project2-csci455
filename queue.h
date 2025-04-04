@@ -30,6 +30,7 @@ void *queue_dequeue(queue_t *this);
 int queue_remove_item(queue_t *this, const void *item);
 
 int queue_size(const queue_t *this);
+void queue_print(const queue_t *this);
 
 
 #endif

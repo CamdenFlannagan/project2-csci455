@@ -8,6 +8,7 @@
 #include <assert.h>
 
 #include "queue.h"
+#include "test.h"
 
 /**
  * Initializes a newly-allocated queue
@@ -186,4 +187,16 @@ int queue_size(const queue_t *this)
 	assert(this != NULL);
 
 	return this->size;
+}
+
+void queue_print(const queue_t *this) {
+	assert(this != NULL);
+
+	DPRINTF("queue contents: START ");
+	queuenode_t *curr = this->head.next;
+	while (curr != NULL) {
+		DPRINTF("%d, ", *(int *)curr->item);
+		curr = curr->next;
+	}
+	DPRINTF("END\n");
 }

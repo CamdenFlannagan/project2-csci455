@@ -10,13 +10,50 @@
 #include "valgrind.h"
 
 #include "queue.h"
+#include "test.h"
 
 static int inited = 0;
 
 int ids_so_far = 0;
 int id = 0;
 
+
+/**
+ * FOR NEXT TIME: "Instead, build, modify, and write contexts using a pointer directly to where you will be storing them"
+ * 	And do the while loop around our scheduler 
+ */
+
+/**
+ * "slingo" is what I call an id while working with the queue
+ */
 queue_t queue;
+
+ucontext_t scheduler;
+
+struct thread_info {
+	int id;
+	ucontext_t ctx;
+	void *rv; // return value
+	int finished; // 0 for not finished, 1 for finished
+	queue_t wait_queue;
+};
+
+struct thread_info threads[KFC_MAX_THREADS];
+
+void scheduler_function(void *args) {
+
+	DPRINTF("We're getting to the scheduler!\n");
+
+	// 1. retrieve the next thread to run's id from the top of the queue
+	struct thread_info *next_thread = (struct thread_info *)queue_dequeue(&queue);
+	id = next_thread->id;
+
+	setcontext(&threads[id].ctx);
+}
+
+void trampoline(void *(* start_func)(void *), void *arg) {
+	kfc_exit(start_func(arg));
+}
 
 /**
  * Initializes the kfc library.  Programs are required to call this function
@@ -24,7 +61,7 @@ queue_t queue;
  *
  * @param kthreads    Number of kernel threads (pthreads) to allocate
  * @param quantum_us  Preemption timeslice in microseconds, or 0 for cooperative
- *                    scheduling
+ *                   &curr_ctx scheduling
  *
  * @return 0 if successful, nonzero on failure
  */
@@ -35,10 +72,27 @@ kfc_init(int kthreads, int quantum_us)
 
 	queue_init(&queue);
 
+	getcontext(&threads[0].ctx);
+	
+	// initialize all wait queues
+	for (int i = 0; i < KFC_MAX_THREADS; i++) {
+		queue_init(&threads[i].wait_queue);
+	}
+
+	// initialize the scheduler ucontext_t
+	getcontext(&scheduler);
+	scheduler.uc_stack.ss_sp = malloc(KFC_DEF_STACK_SIZE);
+	scheduler.uc_stack.ss_size = KFC_DEF_STACK_SIZE;
+	scheduler.uc_stack.ss_flags = 0;
+	VALGRIND_STACK_REGISTER(scheduler.uc_stack.ss_sp, scheduler.uc_stack.ss_sp + scheduler.uc_stack.ss_size);
+
+	scheduler.uc_link = NULL;
+
+	makecontext(&scheduler, (void (*)(void)) scheduler_function, 0);
+
 	inited = 1;
 	return 0;
 }
-
 /**
  * Cleans up any resources which were allocated by kfc_init.  You may assume
  * that this function is called only from the main thread, that any other
@@ -50,13 +104,14 @@ kfc_init(int kthreads, int quantum_us)
  * convenience to you if you are using Valgrind to check your code, which I
  * always encourage.
  */
-
-
 void kfc_teardown(void)
 {
 	assert(inited);
 
 	queue_destroy(&queue);
+	for (int i = 0; i < KFC_MAX_THREADS; i++) {
+		queue_destroy(&threads[i].wait_queue);
+	}
 
 	inited = 0;
 }
@@ -95,25 +150,22 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 		VALGRIND_STACK_REGISTER(stack_base, stack_base + stack_size);
 	}
 
-	ucontext_t next_ctx;
-	getcontext(&next_ctx);
-	next_ctx.uc_stack.ss_sp = stack_base;
-	next_ctx.uc_stack.ss_size = stack_size;
-	next_ctx.uc_stack.ss_flags = 0;
-	
-	ucontext_t curr_ctx;
-	next_ctx.uc_link = &curr_ctx;
-
-	makecontext(&next_ctx, (void (*)(void)) start_func, 1, arg);
-
 	int current_id = id;
 	*ptid = id = ++ids_so_far;
 
-	//DPRINTF("id before swapcontext: %d\n", id);
-	if (swapcontext(&curr_ctx, &next_ctx) == -1){
-		perror("swapcontext error: ");
-	}
-	//DPRINTF("id after  swapcontext: %d\n", id);
+	getcontext(&threads[id].ctx);
+	threads[id].ctx.uc_stack.ss_sp = stack_base;
+	threads[id].ctx.uc_stack.ss_size = stack_size;
+	threads[id].ctx.uc_stack.ss_flags = 0;
+	
+	threads[id].ctx.uc_link = &scheduler; // set this to the scheduler context
+
+	threads[id].id = id;
+
+	//makecontext(&threads[id].ctx, (void (*)(void)) start_func, 1, arg);
+	makecontext(&threads[id].ctx, (void (*)(void))trampoline, 2, start_func, arg);
+
+	queue_enqueue(&queue, &threads[id]);
 
 	id = current_id;
 
@@ -129,8 +181,33 @@ kfc_create(tid_t *ptid, void *(*start_func)(void *), void *arg,
 void
 kfc_exit(void *ret)
 {
+
+	while (queue_peek(&threads[kfc_self()].wait_queue) != NULL) {
+		queue_enqueue(&queue, queue_dequeue(&threads[kfc_self()].wait_queue));
+	}
+
+	threads[kfc_self()].rv = ret;
+	threads[kfc_self()].finished = 1;
+
+	setcontext(&scheduler);
+
 	assert(inited);
 }
+
+/**
+ * IN FUNCTION JOIN() OF JOINER
+ * 1. Joiner thread calls join on thread N
+ * 2. Joiner thread puts itself on the waiting/blocked queue of thread N
+ * 3. Without enqueueing itself to the ready equeue, swap to the scheduler context (so now it's not on the ready queue anymore)
+ * IN FUNCTION EXIT() OF THREAD N
+ * 4. Eventually, thread N will get to the point that it exits.
+ * 5. Thread N puts everything in its waiting queue onto the ready queue
+ * 6. Thread N puts its return value somewhere that the joiner thread can access it
+ * IN FUNCTION JOIN() OF JOINER
+ * 7. Joiner thread will eventually get its chance to run again
+ * 8. Joiner thread will look in the place where thread N stored its return value
+ * 9. Joiner thread will return that value through an out parameter
+ */
 
 /**
  * Waits for the thread specified by tid to terminate, retrieving that threads
@@ -149,6 +226,20 @@ int
 kfc_join(tid_t tid, void **pret)
 {
 	assert(inited);
+
+	if (!threads[tid].finished) {
+		// 2. Joiner thread puts itself on the waiting/blocked queue of thread N
+		queue_enqueue(&threads[tid].wait_queue, &threads[kfc_self()]);
+
+		// 3. Without enqueueing itself to the ready equeue, swap to the scheduler context (so now it's not on the ready queue anymore)
+		//		BUT ONLY IF THREAD N HAS NOT ALREADY FINISHED
+		swapcontext(&threads[kfc_self()].ctx, &scheduler);
+	}
+
+	// 7. Joiner thread will eventually get its chance to run again
+	// 8. Joiner thread will look in the place where thread N stored its return value
+	// 9. Joiner thread will return that value through an out parameter
+	*pret = threads[tid].rv;
 
 	return 0;
 }
@@ -176,6 +267,14 @@ void
 kfc_yield(void)
 {
 	assert(inited);
+
+	/*int *slingo = malloc(sizeof(int));
+	*slingo = id;
+	queue_enqueue(&queue, slingo);*/
+
+	queue_enqueue(&queue, &threads[id]);
+
+	swapcontext(&threads[id].ctx, &scheduler);
 }
 
 /**
