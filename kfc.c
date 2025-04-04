@@ -289,6 +289,10 @@ int
 kfc_sem_init(kfc_sem_t *sem, int value)
 {
 	assert(inited);
+
+	sem->value = value;
+	queue_init(&sem->block_queue);
+
 	return 0;
 }
 
@@ -304,6 +308,12 @@ int
 kfc_sem_post(kfc_sem_t *sem)
 {
 	assert(inited);
+
+	sem->value++;
+	if (sem->value <= 0) {
+		queue_enqueue(&queue, queue_dequeue(&sem->block_queue));
+	}
+
 	return 0;
 }
 
@@ -320,6 +330,13 @@ int
 kfc_sem_wait(kfc_sem_t *sem)
 {
 	assert(inited);
+
+	sem->value--;
+	if (sem->value < 0) {
+		queue_enqueue(&sem->block_queue, &threads[kfc_self()].ctx);
+		swapcontext(&threads[kfc_self()].ctx, &scheduler);
+	}
+
 	return 0;
 }
 
@@ -333,4 +350,6 @@ void
 kfc_sem_destroy(kfc_sem_t *sem)
 {
 	assert(inited);
+
+	queue_destroy(&sem->block_queue);
 }
